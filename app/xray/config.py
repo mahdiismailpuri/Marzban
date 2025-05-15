@@ -1,16 +1,29 @@
 from __future__ import annotations
 
 import json
-import re
+from collections import defaultdict
 from copy import deepcopy
 from pathlib import PosixPath
 from typing import Union
 
-from app.db import GetDB, crud
-from app.models.proxy import ProxySettings, ProxyTypes
+import commentjson
+from sqlalchemy import func
+
+from app.db import GetDB
+from app.db import models as db_models
+from app.models.proxy import ProxyTypes
 from app.models.user import UserStatus
 from app.utils.crypto import get_cert_SANs
 from config import DEBUG, XRAY_EXCLUDE_INBOUND_TAGS, XRAY_FALLBACKS_INBOUND_TAG
+
+
+def merge_dicts(a, b):  # B will override A dictionary key and values
+    for key, value in b.items():
+        if isinstance(value, dict) and key in a and isinstance(a[key], dict):
+            merge_dicts(a[key], value)  # Recursively merge nested dictionaries
+        else:
+            a[key] = value
+    return a
 
 
 class XRayConfig(dict):
@@ -21,18 +34,15 @@ class XRayConfig(dict):
         if isinstance(config, str):
             try:
                 # considering string as json
-                jdata = re.sub(r'//.*|/\*[\s\S]*?\*/', '', config)
-                config = json.loads(jdata)
-            except json.JSONDecodeError:
+                config = commentjson.loads(config)
+            except (json.JSONDecodeError, ValueError):
                 # considering string as file path
                 with open(config, 'r') as file:
-                    jdata = re.sub(r'//.*|/\*[\s\S]*?\*/', '', file.read())
-                    config = json.loads(jdata)
+                    config = commentjson.loads(file.read())
 
         if isinstance(config, PosixPath):
             with open(config, 'r') as file:
-                jdata = re.sub(r'//.*|/\*[\s\S]*?\*/', '', file.read())
-                config = json.loads(jdata)
+                config = commentjson.loads(file.read())
 
         if isinstance(config, dict):
             config = deepcopy(config)
@@ -47,7 +57,6 @@ class XRayConfig(dict):
         self.inbounds_by_protocol = {}
         self.inbounds_by_tag = {}
         self._fallbacks_inbound = self.get_inbound(XRAY_FALLBACKS_INBOUND_TAG)
-        self._addr_clients_by_tag = {}
         self._resolve_inbounds()
 
         self._apply_api()
@@ -69,7 +78,7 @@ class XRayConfig(dict):
             "tag": "API"
         }
         self["stats"] = {}
-        self["policy"] = {
+        forced_policies = {
             "levels": {
                 "0": {
                     "statsUserUplink": True,
@@ -83,6 +92,10 @@ class XRayConfig(dict):
                 "statsOutboundUplink": True
             }
         }
+        if self.get("policy"):
+            self["policy"] = merge_dicts(self.get("policy"), forced_policies)
+        else:
+            self["policy"] = forced_policies
         inbound = {
             "listen": self.api_host,
             "port": self.api_port,
@@ -121,6 +134,8 @@ class XRayConfig(dict):
         for inbound in self['inbounds']:
             if not inbound.get("tag"):
                 raise ValueError("all inbounds must have a unique tag")
+            if ',' in inbound.get("tag"):
+                raise ValueError("character «,» is not allowed in inbound tag")
         for outbound in self['outbounds']:
             if not outbound.get("tag"):
                 raise ValueError("all outbounds must have a unique tag")
@@ -137,8 +152,6 @@ class XRayConfig(dict):
                 inbound['settings'] = {}
             if not inbound['settings'].get('clients'):
                 inbound['settings']['clients'] = []
-            self._addr_clients_by_tag[inbound['tag']
-                                      ] = inbound['settings']['clients']
 
             settings = {
                 "tag": inbound["tag"],
@@ -157,16 +170,12 @@ class XRayConfig(dict):
             try:
                 settings['port'] = inbound['port']
             except KeyError:
-                if not self._fallbacks_inbound:
-                    raise ValueError(
-                        f"port missing on {inbound['tag']}"
-                        "\nset XRAY_FALLBACKS_INBOUND_TAG if you're using an inbound containing fallbacks"
-                    )
-                try:
-                    settings['port'] = self._fallbacks_inbound['port']
-                    settings['is_fallback'] = True
-                except KeyError:
-                    raise ValueError("fallbacks inbound doesn't have port")
+                if self._fallbacks_inbound:
+                    try:
+                        settings['port'] = self._fallbacks_inbound['port']
+                        settings['is_fallback'] = True
+                    except KeyError:
+                        raise ValueError("fallbacks inbound doesn't have port")
 
             # stream settings
             if stream := inbound.get('streamSettings'):
@@ -228,12 +237,17 @@ class XRayConfig(dict):
                                 f"You need to provide publicKey in realitySettings of {inbound['tag']}")
 
                     try:
-                        settings['sid'] = tls_settings.get('shortIds')[0]
+                        settings['sids'] = tls_settings.get('shortIds')
+                        settings['sids'][0]  # check if there is any shortIds
                     except (IndexError, TypeError):
                         raise ValueError(
                             f"You need to define at least one shortID in realitySettings of {inbound['tag']}")
+                    try:
+                        settings['spx'] = tls_settings.get('SpiderX')
+                    except:
+                        settings['spx'] = ""
 
-                if net == 'tcp':
+                if net in ('tcp', 'raw'):
                     header = net_settings.get('header', {})
                     request = header.get('request', {})
                     path = request.get('path')
@@ -253,7 +267,7 @@ class XRayConfig(dict):
 
                 elif net == 'ws':
                     path = net_settings.get('path', '')
-                    host = net_settings.get('headers', {}).get('Host')
+                    host = net_settings.get('host', '') or net_settings.get('headers', {}).get('Host')
 
                     settings['header_type'] = ''
 
@@ -267,19 +281,58 @@ class XRayConfig(dict):
                     if isinstance(host, str):
                         settings['host'] = [host]
 
-                elif net == 'grpc':
+                    settings["heartbeatPeriod"] = net_settings.get('heartbeatPeriod', 0)
+                elif net == 'grpc' or net == 'gun':
                     settings['header_type'] = ''
                     settings['path'] = net_settings.get('serviceName', '')
-                    settings['host'] = []
+                    host = net_settings.get('authority', '')
+                    settings['host'] = [host]
+                    settings['multiMode'] = net_settings.get('multiMode', False)
+
+                elif net == 'quic':
+                    settings['header_type'] = net_settings.get('header', {}).get('type', '')
+                    settings['path'] = net_settings.get('key', '')
+                    settings['host'] = [net_settings.get('security', '')]
+
+                elif net == 'httpupgrade':
+                    settings['path'] = net_settings.get('path', '')
+                    host = net_settings.get('host', '')
+                    settings['host'] = [host]
+
+                elif net in ('splithttp', 'xhttp'):
+                    settings['path'] = net_settings.get('path', '')
+                    host = net_settings.get('host', '')
+                    settings['host'] = [host]
+                    settings['scMaxEachPostBytes'] = net_settings.get('scMaxEachPostBytes', 1000000)
+                    settings['scMaxConcurrentPosts'] = net_settings.get('scMaxConcurrentPosts', 100)
+                    settings['scMinPostsIntervalMs'] = net_settings.get('scMinPostsIntervalMs', 30)
+                    settings['xPaddingBytes'] = net_settings.get('xPaddingBytes', "100-1000")
+                    settings['xmux'] = net_settings.get('xmux', {})
+                    settings["mode"] = net_settings.get("mode", "auto")
+                    settings["noGRPCHeader"] = net_settings.get("noGRPCHeader", False)
+                    settings["keepAlivePeriod"] = net_settings.get("keepAlivePeriod", 0)
+
+                elif net == 'kcp':
+                    header = net_settings.get('header', {})
+
+                    settings['header_type'] = header.get('type', '')
+                    settings['host'] = header.get('domain', '')
+                    settings['path'] = net_settings.get('seed', '')
+
+                elif net in ("http", "h2", "h3"):
+                    net_settings = stream.get("httpSettings", {})
+
+                    settings['host'] = net_settings.get('host') or net_settings.get('Host', '')
+                    settings['path'] = net_settings.get('path', '')
 
                 else:
                     settings['path'] = net_settings.get('path', '')
                     host = net_settings.get(
                         'host', {}) or net_settings.get('Host', {})
-                    if host and isinstance(host, list):
-                        settings['host'] = host[0]
-                    elif host and isinstance(host, str):
+                    if host and isinstance(host, str):
                         settings['host'] = host
+                    elif host and isinstance(host, list):
+                        settings['host'] = host[0]
 
             self.inbounds.append(settings)
             self.inbounds_by_tag[inbound['tag']] = settings
@@ -288,20 +341,6 @@ class XRayConfig(dict):
                 self.inbounds_by_protocol[inbound['protocol']].append(settings)
             except KeyError:
                 self.inbounds_by_protocol[inbound['protocol']] = [settings]
-
-    def add_inbound_client(self, inbound_tag: str, email: str, settings: dict):
-        inbound = self.inbounds_by_tag.get(inbound_tag, {})
-        client = {"email": email, **settings}
-
-        # XTLS currently only supports transmission methods of TCP and mKCP
-        if (inbound.get('network', 'tcp') not in ('tcp', 'kcp') or inbound.get('header_type') == 'http') and client.get('flow'):
-            del client['flow']
-
-        try:
-            self._addr_clients_by_tag[inbound_tag].append(client)
-        except KeyError:
-            return
-        return client
 
     def get_inbound(self, tag) -> dict:
         for inbound in self['inbounds']:
@@ -323,18 +362,72 @@ class XRayConfig(dict):
         config = self.copy()
 
         with GetDB() as db:
-            for user in crud.get_users(db, status=[UserStatus.active,
-                                                   UserStatus.on_hold]):
-                proxies_settings = {
-                    p.type: ProxySettings.from_dict(
-                        p.type, p.settings).dict(no_obj=True)
-                    for p in user.proxies
-                }
-                for proxy_type, inbound_tags in user.inbounds.items():
-                    for inbound_tag in inbound_tags:
-                        config.add_inbound_client(inbound_tag,
-                                                  f"{user.id}.{user.username}",
-                                                  proxies_settings[proxy_type])
+            query = db.query(
+                db_models.User.id,
+                db_models.User.username,
+                func.lower(db_models.Proxy.type).label('type'),
+                db_models.Proxy.settings,
+                func.group_concat(db_models.excluded_inbounds_association.c.inbound_tag).label('excluded_inbound_tags')
+            ).join(
+                db_models.Proxy, db_models.User.id == db_models.Proxy.user_id
+            ).outerjoin(
+                db_models.excluded_inbounds_association,
+                db_models.Proxy.id == db_models.excluded_inbounds_association.c.proxy_id
+            ).filter(
+                db_models.User.status.in_([UserStatus.active, UserStatus.on_hold])
+            ).group_by(
+                func.lower(db_models.Proxy.type),
+                db_models.User.id,
+                db_models.User.username,
+                db_models.Proxy.settings,
+            )
+            result = query.all()
+
+            grouped_data = defaultdict(list)
+
+            for row in result:
+                grouped_data[row.type].append((
+                    row.id,
+                    row.username,
+                    row.settings,
+                    [i for i in row.excluded_inbound_tags.split(',') if i] if row.excluded_inbound_tags else None
+                ))
+
+            for proxy_type, rows in grouped_data.items():
+
+                inbounds = self.inbounds_by_protocol.get(proxy_type)
+                if not inbounds:
+                    continue
+
+                for inbound in inbounds:
+                    clients = config.get_inbound(inbound['tag'])['settings']['clients']
+
+                    for row in rows:
+                        user_id, username, settings, excluded_inbound_tags = row
+
+                        if excluded_inbound_tags and inbound['tag'] in excluded_inbound_tags:
+                            continue
+
+                        client = {
+                            "email": f"{user_id}.{username}",
+                            **settings
+                        }
+
+                        # XTLS currently only supports transmission methods of TCP and mKCP
+                        if client.get('flow') and (
+                                inbound.get('network', 'tcp') not in ('tcp', 'raw', 'kcp')
+                                or
+                                (
+                                    inbound.get('network', 'tcp') in ('tcp', 'raw', 'kcp')
+                                    and
+                                    inbound.get('tls') not in ('tls', 'reality')
+                                )
+                                or
+                                inbound.get('header_type') == 'http'
+                        ):
+                            del client['flow']
+
+                        clients.append(client)
 
         if DEBUG:
             with open('generated_config-debug.json', 'w') as f:

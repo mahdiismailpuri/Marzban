@@ -1,46 +1,43 @@
+import { Box } from "@chakra-ui/react";
 import { FC } from "react";
 
 type UserStatusProps = {
   lastOnline?: string | null;
 };
 
+const convertDateFormat = (lastOnline?: string | null): number | null => {
+  if (!lastOnline) return null;
+
+  const date = new Date(`${lastOnline}Z`);
+  return Math.floor(date.getTime() / 1000);
+};
+
 export const OnlineBadge: FC<UserStatusProps> = ({ lastOnline }) => {
-  const convertDateFormat = (
-    lastOnline: string | null | undefined
-  ): number | null => {
-    if (lastOnline === null || lastOnline === undefined) {
-      // Handle the case where lastOnline is null or undefined
-      return null;
-    }
-
-    // Parse the input date string
-    const gmtDate = new Date(lastOnline + "Z"); // Append 'Z' to indicate it's in GMT
-
-    // Get the browser's time zone
-    const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-    // Create a new date object with the browser's time zone
-    const localDate = new Date(
-      gmtDate.toLocaleString(undefined, { timeZone: browserTimeZone })
-    );
-
-    // Calculate the Unix timestamp (in seconds)
-    const unixTimestamp = Math.floor(localDate.getTime() / 1000);
-
-    return unixTimestamp;
-  };
-  const currentTimeInSeconds = Math.floor(Date.now() / 1000); // Current time in seconds
-
+  const currentTimeInSeconds = Math.floor(Date.now() / 1000);
   const unixTime = convertDateFormat(lastOnline);
 
-  const timeDifferenceInSeconds = unixTime
-    ? currentTimeInSeconds - unixTime
-    : 0;
+  if (!lastOnline || unixTime === null) {
+    return (
+      <Box
+        border="1px solid"
+        borderColor="gray.400"
+        _dark={{ borderColor: "gray.600" }}
+        className="circle"
+      />
+    );
+  }
 
-  if (timeDifferenceInSeconds <= 61 && timeDifferenceInSeconds > 0)
-    return <div className="circle pulse green"></div>;
-  else if (timeDifferenceInSeconds === 0)
-    return <div className="circle pulse orange"></div>;
+  const timeDifferenceInSeconds = currentTimeInSeconds - unixTime;
 
-  return <div className="circle pulse red"></div>;
+  if (timeDifferenceInSeconds <= 60) {
+    return (
+      <Box
+        bg="green.300"
+        _dark={{ bg: "green.500" }}
+        className="circle pulse green"
+      />
+    );
+  }
+
+  return <Box bg="gray.400" _dark={{ bg: "gray.600" }} className="circle" />;
 };

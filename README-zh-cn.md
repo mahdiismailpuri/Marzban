@@ -62,10 +62,11 @@
 
 ## 目录
 - [概览](#概览)
-	- [为什么要使用 Marzban?](#为什么要使用-marzban)
-		- [特性](#特性)
+  - [为什么要使用 Marzban?](#为什么要使用-marzban)
+    - [特性](#特性)
 - [安装指南](#安装指南)
 - [配置](#配置)
+- [文档](#文档)
 - [如何使用 API](#如何使用-api)
 - [如何备份 Marzban](#如何备份-marzban)
 - [Telegram bot](#telegram-bot)
@@ -94,7 +95,7 @@ Marzban 是一个用户友好、功能丰富且可靠的工具。它让您可以
 - 单端口的**多入站**支持（使用 fallbacks）
 - **流量**和**过期日期**限制
 - 周期性的流量限制（例如每天、每周等）
-- 兼容 **V2ray** 的**订阅链接**（例如 V2RayNG、OneClick、Nekoray 等）和 **Clash**
+- 兼容 **V2ray** 的**订阅链接**（例如 V2RayNG、SingBox、Nekoray 等）和 **Clash**
 - 自动化的**分享链接**和**二维码**生成器
 - 系统监控和**流量统计**
 - 可自定义的 xray 配置
@@ -104,10 +105,21 @@ Marzban 是一个用户友好、功能丰富且可靠的工具。它让您可以
 
 
 # 安装指南
-Run the following command
+运行以下命令以使用 SQLite 数据库安装 Marzban。
 
 ```bash
 sudo bash -c "$(curl -sL https://github.com/Gozargah/Marzban-scripts/raw/master/marzban.sh)" @ install
+```
+
+运行以下命令以使用 MySQL 数据库安装 Marzban。
+
+```bash
+sudo bash -c "$(curl -sL https://github.com/Gozargah/Marzban-scripts/raw/master/marzban.sh)" @ install --database mysql
+```
+
+运行以下命令以使用 MariaDB 数据库安装 Marzban。
+```bash
+sudo bash -c "$(curl -sL https://github.com/Gozargah/Marzban-scripts/raw/master/marzban.sh)" @ install --database mariadb
 ```
 
 Once the installation is complete:
@@ -116,7 +128,18 @@ Once the installation is complete:
 - The Marzban files will be located at `/opt/marzban`
 - The configuration file can be found at `/opt/marzban/.env` (refer to [configurations](#configuration) section to see variables)
 - The data files will be placed at `/usr/lib/marzban`
-- You can access the Marzban dashboard by opening a web browser and navigating to `http://YOUR_SERVER_IP:8000/dashboard/` (replace YOUR_SERVER_IP with the actual IP address of your server)
+- For security reasons, the Marzban dashboard is not accessible via IP address. Therefore, you must [obtain SSL certificate](https://gozargah.github.io/marzban/en/examples/issue-ssl-certificate) and access your Marzban dashboard by opening a web browser and navigating to `https://YOUR_DOMAIN:8000/dashboard/` (replace YOUR_DOMAIN with your actual domain)
+- You can also use SSH port forwarding to access the Marzban dashboard locally without a domain. Replace `user@serverip` with your actual SSH username and server IP and Run the command below:
+
+```bash
+ssh -L 8000:localhost:8000 user@serverip
+```
+
+Finally, you can enter the following link in your browser to access your Marzban dashboard:
+
+http://localhost:8000/dashboard/
+
+You will lose access to the dashboard as soon as you close the SSH terminal. Therefore, this method is recommended only for testing purposes.
 
 Next, you need to create a sudo admin for logging into the Marzban dashboard by the following command
 
@@ -198,7 +221,7 @@ server {
     ssl_certificate      /etc/letsencrypt/live/example.com/fullchain.pem;
     ssl_certificate_key  /etc/letsencrypt/live/example.com/privkey.pem;
 
-    location ~* /(dashboard|api|docs|redoc|openapi.json) {
+    location ~* /(dashboard|statics|sub|api|docs|redoc|openapi.json) {
         proxy_pass http://0.0.0.0:8000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -250,31 +273,48 @@ server {
 
 > 您可以使用环境变量或将其放置在 `env` 或 `.env` 文件中来设置以下设置。
 
-| 变量                            | 描述                                                                                                 |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| SUDO_USERNAME                   | 管理员用户名（默认: admin）                                                                          |
-| SUDO_PASSWORD                   | 管理员密码（默认: admin）                                                                            |
-| SQLALCHEMY_DATABASE_URL         | 数据库文档（[SQLAlchemy's docs](https://docs.sqlalchemy.org/en/20/core/engines.html#database-urls)） |
-| UVICORN_HOST                    | 绑定应用程序到此主机（默认为 `0.0.0.0`）                                                             |
-| UVICORN_PORT                    | 绑定应用程序到此端口（默认为 `8000`）                                                                |
-| UVICORN_UDS                     | 将应用程序绑定到一个 UNIX 域套接字                                                                   |
-| UVICORN_SSL_CERTFILE            | SSL 证书文件路径                                                                                     |
-| UVICORN_SSL_KEYFILE             | SSL 密钥文件路径                                                                                     |
-| XRAY_JSON                       | Xray 的 json 配置文件路径（默认: `xray_config.json`）                                                |
-| XRAY_EXECUTABLE_PATH            | Xray 的执行程序路径: `/usr/local/bin/xray`）                                                         |
-| XRAY_ASSETS_PATH                | Xray 的资源目录: `/usr/local/share/xray`）                                                           |
-| XRAY_SUBSCRIPTION_URL_PREFIX    | 订阅URL的前缀                                                                                        |
-| XRAY_FALLBACKS_INBOUND_TAG      | 包含 fallbacks 的入站标记, 在您需要使用 fallbacks 配置此项                                           |
-| XRAY_EXCLUDE_INBOUND_TAGS       | 不需要此应用程序管理或在链接中包含的入站标记                                                         |
-| CLASH_SUBSCRIPTION_TEMPLATE     | 将用于生成冲突配置的模板（默认值：`clash/default.yml`）                                              |
-| SUBSCRIPTION_PAGE_TEMPLATE      | 用于生成订阅信息页面的模板（默认：`subscription/index.html`）                                        |
-| HOME_PAGE_TEMPLATE              | 诱饵页面模板（默认：`home/index.html`）                                                              |
-| TELEGRAM_API_TOKEN              | Telegram bot API 令牌（可以从 [@botfather](https://t.me/botfather) 获取）                            |
-| TELEGRAM_ADMIN_ID               | 管理员的 Telegram ID（可以使用 [@userinfobot](https://t.me/userinfobot) 查找您的 ID）                |
-| TELEGRAM_PROXY_URL              | 在代理下运行 Telegram bot。                                                                          |
-| JWT_ACCESS_TOKEN_EXPIRE_MINUTES | Access Tokens 的过期时间，以分钟为单位，`0` 表示无限期（默认为 `1440` 分钟）                         |
-| DOCS                            | API 文档是否应该在 `/docs` 和 `/redoc` 上提供（默认为 `False`                                        |
-| DEBUG                           | 开发者调试模式（默认: `False`）                                                                      |
+| 变量                                     | 描述                                                                                                                      |
+| ---------------------------------------- |-------------------------------------------------------------------------------------------------------------------------|
+| SUDO_USERNAME                            | 管理员用户名（默认: admin）                                                                                                       |
+| SUDO_PASSWORD                            | 管理员密码（默认: admin）                                                                                                        |
+| SQLALCHEMY_DATABASE_URL                  | 数据库文档（[SQLAlchemy's docs](https://docs.sqlalchemy.org/en/20/core/engines.html#database-urls)）                           |
+| UVICORN_HOST                             | 绑定应用程序到此主机（默认为 `0.0.0.0`）                                                                                               |
+| UVICORN_PORT                             | 绑定应用程序到此端口（默认为 `8000`）                                                                                                  |
+| UVICORN_UDS                              | 将应用程序绑定到一个 UNIX 域套接字                                                                                                    |
+| UVICORN_SSL_CERTFILE                     | SSL 证书文件路径                                                                                                              |
+| UVICORN_SSL_KEYFILE                      | SSL 密钥文件路径                                                                                                              |
+| UVICORN_SSL_CA_TYPE                      | 授权 SSL 证书的类型。使用“private”来测试自签名 CA（默认值：`public`）                                                                          |
+| XRAY_JSON                                | Xray 的 json 配置文件路径（默认: `xray_config.json`）                                                                              |
+| XRAY_EXECUTABLE_PATH                     | Xray 的执行程序路径: `/usr/local/bin/xray`）                                                                                    |
+| XRAY_ASSETS_PATH                         | Xray 的资源目录: `/usr/local/share/xray`）                                                                                    |
+| XRAY_SUBSCRIPTION_URL_PREFIX             | 订阅URL的前缀                                                                                                                |
+| XRAY_FALLBACKS_INBOUND_TAG               | 包含 fallbacks 的入站标记, 在您需要使用 fallbacks 配置此项                                                                               |
+| XRAY_EXCLUDE_INBOUND_TAGS                | 不需要此应用程序管理或在链接中包含的入站标记                                                                                                  |
+| CLASH_SUBSCRIPTION_TEMPLATE              | 将用于生成冲突配置的模板（默认值：`clash/default.yml`）                                                                                   |
+| SUBSCRIPTION_PAGE_TEMPLATE               | 用于生成订阅信息页面的模板（默认：`subscription/index.html`）                                                                             |
+| HOME_PAGE_TEMPLATE                       | 诱饵页面模板（默认：`home/index.html`）                                                                                            |
+| TELEGRAM_API_TOKEN                       | Telegram bot API 令牌（可以从 [@botfather](https://t.me/botfather) 获取）                                                        |
+| TELEGRAM_ADMIN_ID                        | 管理员的 Telegram ID（可以使用 [@userinfobot](https://t.me/userinfobot) 查找您的 ID）                                                 |
+| TELEGRAM_PROXY_URL                       | 在代理下运行 Telegram bot。                                                                                                    |
+| JWT_ACCESS_TOKEN_EXPIRE_MINUTES          | Access Tokens 的过期时间，以分钟为单位，`0` 表示无限期（默认为 `1440` 分钟）                                                                     |
+| DOCS                                     | API 文档是否应该在 `/docs` 和 `/redoc` 上提供（默认为 `False`                                                                          |
+| DEBUG                                    | Debug mode for development (default: `False`)                                                                           |
+| WEBHOOK_ADDRESS                          | Webhook address to send notifications to. Webhook notifications will be sent if this value was set.                     |
+| WEBHOOK_SECRET                           | Webhook secret will be sent with each request as `x-webhook-secret` in the header (default: `None`)                     |
+| NUMBER_OF_RECURRENT_NOTIFICATIONS        | How many times to retry if an error detected in sending a notification (default: `3`)                                   |
+| RECURRENT_NOTIFICATIONS_TIMEOUT          | Timeout between each retry if an error detected in sending a notification in seconds (default: `180`)                   |
+| NOTIFY_REACHED_USAGE_PERCENT             | At which percentage of usage to send the warning notification (default: `80`)                                           |
+| NOTIFY_DAYS_LEFT                         | When to send warning notifaction about expiration (default: `3`)                                                        |
+| USERS_AUTODELETE_DAYS                    | Delete expired (and optionally limited users) after this many days (Negative values disable this feature, default: `-1`) |
+| USER_AUTODELETE_INCLUDE_LIMITED_ACCOUNTS | Weather to include limited accounts in the auto-delete feature (default: `False`)                                       |
+| USE_CUSTOM_JSON_DEFAULT                  | Enable custom JSON config for ALL supported clients (default: `False`)                                                  |
+| USE_CUSTOM_JSON_FOR_V2RAYNG              | Enable custom JSON config only for V2rayNG (default: `False`)                                                           |
+| USE_CUSTOM_JSON_FOR_STREISAND            | Enable custom JSON config only for Streisand (default: `False`)                                                         |
+| USE_CUSTOM_JSON_FOR_V2RAYN               | Enable custom JSON config only for V2rayN (default: `False`)                                                            |
+
+
+# 文档
+[Marzban 文档](https://gozargah.github.io/marzban) 提供了所有必要的入门指南，支持三种语言：波斯语、英语和俄语。要全面覆盖项目的各个方面，这些文档需要大量的工作。我们欢迎并感谢您的贡献，以帮助我们改进文档。您可以在这个 [GitHub 仓库](https://github.com/Gozargah/gozargah.github.io) 中进行贡献。
 
 
 # 如何使用 API
@@ -287,6 +327,23 @@ Marzban 提供了 REST API，使开发人员能够以编程方式与 Marzban 服
 
 1. 默认情况下，所有重要的 Marzban 文件都保存在 `/var/lib/marzban` ( Docker 版本)中。将整个 `/var/lib/marzban` 目录复制到您选择的备份位置，比如外部硬盘或云存储。
 2. 此外，请确保备份您的 `env` 文件，其中包含您的配置变量，以及您的 `Xray` 配置文件。
+
+Marzban 的备份服务会高效地压缩所有必要文件并将它们发送到您指定的 Telegram 机器人。它支持 SQLite、MySQL 和 MariaDB 数据库。其一个主要功能是自动化，允许您每小时安排一次备份。对于 Telegram 机器人的上传限制没有限制；如果文件超过限制，它会被拆分并以多个部分发送。此外，您可以在任何时间启动即时备份。
+
+安装最新版 Marzban 命令：
+```bash
+sudo bash -c "$(curl -sL https://github.com/Gozargah/Marzban-scripts/raw/master/marzban.sh)" @ install-script
+```
+
+设置备份服务：
+```bash
+marzban backup-service
+```
+
+获取即时备份：
+```bash
+marzban backup
+```
 
 按照这些步骤，您可以确保有备份所有 Marzban 文件和数据，以及您的配置变量和 Xray 配置，以备将来恢复使用。请记得定期更新备份，以保持它们的最新性。
 

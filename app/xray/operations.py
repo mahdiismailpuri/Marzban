@@ -31,7 +31,7 @@ def get_tls():
 @threaded_function
 def _add_user_to_inbound(api: XRayAPI, inbound_tag: str, account: Account):
     try:
-        api.add_inbound_user(tag=inbound_tag, user=account)
+        api.add_inbound_user(tag=inbound_tag, user=account, timeout=30)
     except (xray.exc.EmailExistsError, xray.exc.ConnectionError):
         pass
 
@@ -39,7 +39,7 @@ def _add_user_to_inbound(api: XRayAPI, inbound_tag: str, account: Account):
 @threaded_function
 def _remove_user_from_inbound(api: XRayAPI, inbound_tag: str, email: str):
     try:
-        api.remove_inbound_user(tag=inbound_tag, email=email)
+        api.remove_inbound_user(tag=inbound_tag, email=email, timeout=30)
     except (xray.exc.EmailNotFoundError, xray.exc.ConnectionError):
         pass
 
@@ -47,17 +47,17 @@ def _remove_user_from_inbound(api: XRayAPI, inbound_tag: str, email: str):
 @threaded_function
 def _alter_inbound_user(api: XRayAPI, inbound_tag: str, account: Account):
     try:
-        api.remove_inbound_user(tag=inbound_tag, email=account.email)
+        api.remove_inbound_user(tag=inbound_tag, email=account.email, timeout=30)
     except (xray.exc.EmailNotFoundError, xray.exc.ConnectionError):
         pass
     try:
-        api.add_inbound_user(tag=inbound_tag, user=account)
+        api.add_inbound_user(tag=inbound_tag, user=account, timeout=30)
     except (xray.exc.EmailExistsError, xray.exc.ConnectionError):
         pass
 
 
 def add_user(dbuser: "DBUser"):
-    user = UserResponse.from_orm(dbuser)
+    user = UserResponse.model_validate(dbuser)
     email = f"{dbuser.id}.{dbuser.username}"
 
     for proxy_type, inbound_tags in user.inbounds.items():
@@ -71,7 +71,17 @@ def add_user(dbuser: "DBUser"):
             account = proxy_type.account_model(email=email, **proxy_settings)
 
             # XTLS currently only supports transmission methods of TCP and mKCP
-            if (inbound.get('network', 'tcp') not in ('tcp', 'kcp') or inbound.get('header_type') == 'http') and getattr(account, 'flow', None):
+            if getattr(account, 'flow', None) and (
+                inbound.get('network', 'tcp') not in ('tcp', 'kcp')
+                or
+                (
+                    inbound.get('network', 'tcp') in ('tcp', 'kcp')
+                    and
+                    inbound.get('tls') not in ('tls', 'reality')
+                )
+                or
+                inbound.get('header_type') == 'http'
+            ):
                 account.flow = XTLSFlows.NONE
 
             _add_user_to_inbound(xray.api, inbound_tag, account)  # main core
@@ -91,7 +101,7 @@ def remove_user(dbuser: "DBUser"):
 
 
 def update_user(dbuser: "DBUser"):
-    user = UserResponse.from_orm(dbuser)
+    user = UserResponse.model_validate(dbuser)
     email = f"{dbuser.id}.{dbuser.username}"
 
     active_inbounds = []
@@ -107,7 +117,17 @@ def update_user(dbuser: "DBUser"):
             account = proxy_type.account_model(email=email, **proxy_settings)
 
             # XTLS currently only supports transmission methods of TCP and mKCP
-            if (inbound.get('network', 'tcp') not in ('tcp', 'kcp') or inbound.get('header_type') == 'http') and getattr(account, 'flow', None):
+            if getattr(account, 'flow', None) and (
+                inbound.get('network', 'tcp') not in ('tcp', 'kcp')
+                or
+                (
+                    inbound.get('network', 'tcp') in ('tcp', 'kcp')
+                    and
+                    inbound.get('tls') not in ('tls', 'reality')
+                )
+                or
+                inbound.get('header_type') == 'http'
+            ):
                 account.flow = XTLSFlows.NONE
 
             _alter_inbound_user(xray.api, inbound_tag, account)  # main core
@@ -132,7 +152,10 @@ def remove_node(node_id: int):
         except Exception:
             pass
         finally:
-            del xray.nodes[node_id]
+            try:
+                del xray.nodes[node_id]
+            except KeyError:
+                pass
 
 
 def add_node(dbnode: "DBNode"):
@@ -155,13 +178,27 @@ def _change_node_status(node_id: int, status: NodeStatus, message: str = None, v
             dbnode = crud.get_node_by_id(db, node_id)
             if not dbnode:
                 return
+
+            if dbnode.status == NodeStatus.disabled:
+                remove_node(dbnode.id)
+                return
+
             crud.update_node_status(db, dbnode, status, message, version)
         except SQLAlchemyError:
             db.rollback()
 
 
+global _connecting_nodes
+_connecting_nodes = {}
+
+
 @threaded_function
-def connect_node(node_id, config):
+def connect_node(node_id, config=None):
+    global _connecting_nodes
+
+    if _connecting_nodes.get(node_id):
+        return
+
     with GetDB() as db:
         dbnode = crud.get_node_by_id(db, node_id)
 
@@ -175,19 +212,32 @@ def connect_node(node_id, config):
         node = xray.operations.add_node(dbnode)
 
     try:
+        _connecting_nodes[node_id] = True
+
         _change_node_status(node_id, NodeStatus.connecting)
         logger.info(f"Connecting to \"{dbnode.name}\" node")
+
+        if config is None:
+            config = xray.config.include_db_users()
+
         node.start(config)
-        version = node.remote.fetch_xray_version()
+        version = node.get_version()
         _change_node_status(node_id, NodeStatus.connected, version=version)
         logger.info(f"Connected to \"{dbnode.name}\" node, xray run on v{version}")
+
     except Exception as e:
         _change_node_status(node_id, NodeStatus.error, message=str(e))
         logger.info(f"Unable to connect to \"{dbnode.name}\" node")
 
+    finally:
+        try:
+            del _connecting_nodes[node_id]
+        except KeyError:
+            pass
+
 
 @threaded_function
-def restart_node(node_id, config):
+def restart_node(node_id, config=None):
     with GetDB() as db:
         dbnode = crud.get_node_by_id(db, node_id)
 
@@ -202,22 +252,12 @@ def restart_node(node_id, config):
     if not node.connected:
         return connect_node(node_id, config)
 
-    if not node.started:
-        try:
-            logger.info(f"Starting Xray core of \"{dbnode.name}\" node")
-            node.start(config)
-            logger.info(f"Xray core of \"{dbnode.name}\" node started")
-        except Exception as e:
-            _change_node_status(node_id, NodeStatus.error, message=str(e))
-            logger.info(f"Unable to start node {node_id}")
-            try:
-                node.disconnect()
-            except Exception:
-                pass
-        return
-
     try:
         logger.info(f"Restarting Xray core of \"{dbnode.name}\" node")
+
+        if config is None:
+            config = xray.config.include_db_users()
+
         node.restart(config)
         logger.info(f"Xray core of \"{dbnode.name}\" node restarted")
     except Exception as e:

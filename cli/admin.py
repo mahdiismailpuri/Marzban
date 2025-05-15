@@ -1,19 +1,51 @@
 from typing import Optional, Union
 
 import typer
-from rich.table import Table
+from decouple import UndefinedValueError, config
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
-from decouple import config, UndefinedValueError
 
-from app.db import GetDB
-from app.db import crud
+from app.db import GetDB, crud
 from app.db.models import Admin, User
 from app.models.admin import AdminCreate, AdminPartialModify
+from app.utils.system import readable_size
+
 from . import utils
 
 app = typer.Typer(no_args_is_help=True)
+
+
+def validate_telegram_id(value: Union[int, str]) -> Union[int, None]:
+    if not value:
+        return 0
+    if not isinstance(value, int) and not value.isdigit():
+        raise typer.BadParameter("Telegram ID must be an integer.")
+    if int(value) < 0:
+        raise typer.BadParameter("Telegram ID must be a positive integer.")
+    return value
+
+
+def validate_discord_webhook(value: str) -> Union[str, None]:
+    if not value or value == "0":
+        return ""
+    if not value.startswith("https://discord.com/api/webhooks/"):
+        utils.error("Discord webhook must start with 'https://discord.com/api/webhooks/'")
+    return value
+
+
+def calculate_admin_usage(admin_id: int) -> str:
+    with GetDB() as db:
+        usage = db.query(func.sum(User.used_traffic)).filter_by(admin_id=admin_id).first()[0]
+        return readable_size(int(usage or 0))
+
+
+def calculate_admin_reseted_usage(admin_id: int) -> str:
+    with GetDB() as db:
+        usage = db.query(func.sum(User.reseted_usage)).filter_by(admin_id=admin_id).scalar()
+        return readable_size(int(usage or 0))
 
 
 @app.command(name="list")
@@ -26,11 +58,17 @@ def list_admins(
     with GetDB() as db:
         admins: list[Admin] = crud.get_admins(db, offset=offset, limit=limit, username=username)
         utils.print_table(
-            table=Table("Username", "Is sudo", "Created at"),
+            table=Table("Username", 'Usage', 'Reseted usage', "Users Usage", "Is sudo",
+                        "Created at", "Telegram ID", "Discord Webhook"),
             rows=[
                 (str(admin.username),
+                 calculate_admin_usage(admin.id),
+                 calculate_admin_reseted_usage(admin.id),
+                 readable_size(admin.users_usage),
                  "✔️" if admin.is_sudo else "✖️",
-                 utils.readable_datetime(admin.created_at))
+                 utils.readable_datetime(admin.created_at),
+                 str(admin.telegram_id or "✖️"),
+                 str(admin.discord_webhook or "✖️"))
                 for admin in admins
             ]
         )
@@ -60,10 +98,14 @@ def delete_admin(
 
 @app.command(name="create")
 def create_admin(
-    username: str = typer.Option(..., *utils.FLAGS["username"], prompt=True),
-    is_sudo: bool = typer.Option(None, *utils.FLAGS["is_sudo"], prompt=True),
+    username: str = typer.Option(..., *utils.FLAGS["username"], show_default=False, prompt=True),
+    is_sudo: bool = typer.Option(False, *utils.FLAGS["is_sudo"], prompt=True),
     password: str = typer.Option(..., prompt=True, confirmation_prompt=True,
-                                 hide_input=True, hidden=True, envvar=utils.PASSWORD_ENVIRON_NAME)
+                                 hide_input=True, hidden=True, envvar=utils.PASSWORD_ENVIRON_NAME),
+    telegram_id: str = typer.Option('', *utils.FLAGS["telegram_id"], prompt="Telegram ID",
+                                    show_default=False, callback=validate_telegram_id),
+    discord_webhook: str = typer.Option('', *utils.FLAGS["discord_webhook"], prompt=True,
+                                        show_default=False, callback=validate_discord_webhook),
 ):
     """
     Creates an admin
@@ -72,14 +114,18 @@ def create_admin(
     """
     with GetDB() as db:
         try:
-            crud.create_admin(db, AdminCreate(username=username, password=password, is_sudo=is_sudo))
+            crud.create_admin(db, AdminCreate(username=username,
+                                              password=password,
+                                              is_sudo=is_sudo,
+                                              telegram_id=telegram_id,
+                                              discord_webhook=discord_webhook))
             utils.success(f'Admin "{username}" created successfully.')
         except IntegrityError:
             utils.error(f'Admin "{username}" already exists!')
 
 
 @app.command(name="update")
-def update_admin(username: str = typer.Option(..., *utils.FLAGS["username"], prompt=True)):
+def update_admin(username: str = typer.Option(..., *utils.FLAGS["username"], prompt=True, show_default=False)):
     """
     Updates the specified admin
 
@@ -100,9 +146,19 @@ def update_admin(username: str = typer.Option(..., *utils.FLAGS["username"], pro
             hide_input=True
         ) or None
 
+        telegram_id: str = typer.prompt("Telegram ID (Enter 0 to clear current value)",
+                                        default=admin.telegram_id or "")
+        telegram_id = validate_telegram_id(telegram_id)
+
+        discord_webhook: str = typer.prompt("Discord webhook (Enter 0 to clear current value)",
+                                            default=admin.discord_webhook or "")
+        discord_webhook = validate_discord_webhook(discord_webhook)
+
         return AdminPartialModify(
             is_sudo=is_sudo,
             password=new_password,
+            telegram_id=telegram_id,
+            discord_webhook=discord_webhook
         )
 
     with GetDB() as db:

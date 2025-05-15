@@ -307,6 +307,7 @@ export const UsersTable: FC<UsersTableProps> = (props) => {
                   >
                     <option></option>
                     <option>active</option>
+                    <option>on_hold</option>
                     <option>disabled</option>
                     <option>limited</option>
                     <option>expired</option>
@@ -345,10 +346,16 @@ export const UsersTable: FC<UsersTableProps> = (props) => {
                       onClick={toggleAccordion.bind(null, i)}
                       cursor="pointer"
                     >
-                      <Td borderBottom={0} minW="100px" pl={4} pr={4}>
+                      <Td
+                        borderBottom={0}
+                        minW="100px"
+                        pl={4}
+                        pr={4}
+                        maxW="calc(100vw - 50px - 32px - 100px - 48px)"
+                      >
                         <div className="flex-status">
                           <OnlineBadge lastOnline={user.online_at} />
-                          {user.username}
+                          <Text isTruncated>{user.username}</Text>
                         </div>
                       </Td>
                       <Td borderBottom={0} minW="50px" pl={0} pr={0}>
@@ -504,9 +511,8 @@ export const UsersTable: FC<UsersTableProps> = (props) => {
               minW="150px"
               cursor={"pointer"}
             >
-              <HStack spacing={0} position="relative">
+              <HStack position="relative" gap={"5px"}>
                 <Text
-                  position="absolute"
                   _dark={{
                     bg: "gray.750",
                   }}
@@ -516,17 +522,23 @@ export const UsersTable: FC<UsersTableProps> = (props) => {
                   userSelect="none"
                   pointerEvents="none"
                   zIndex={1}
-                  w="100%"
                 >
                   {t("usersTable.status")}
                   {filters.status ? ": " + filters.status : ""}
                 </Text>
+                <Text>/</Text>
+                <Sort sort={filters.sort} column="expire" />
+                <HStack onClick={handleSort.bind(null, "expire")}>
+                  <Text>Sort by expire</Text>
+                </HStack>
                 <Select
                   fontSize="xs"
                   fontWeight="extrabold"
                   textTransform="uppercase"
                   cursor="pointer"
+                  position={"absolute"}
                   p={0}
+                  left={"-40px"}
                   border={0}
                   h="auto"
                   w="auto"
@@ -539,6 +551,7 @@ export const UsersTable: FC<UsersTableProps> = (props) => {
                 >
                   <option></option>
                   <option>active</option>
+                  <option>on_hold</option>
                   <option>disabled</option>
                   <option>limited</option>
                   <option>expired</option>

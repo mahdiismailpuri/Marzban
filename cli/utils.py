@@ -16,6 +16,8 @@ PASSWORD_ENVIRON_NAME = "MARZBAN_ADMIN_PASSWORD"
 
 FLAGS: Dict[str, tuple] = {
     "username": ("--username", "-u"),
+    "search": ("--search", "-s"),
+    "admin": ("--admin", "--owner"),
     "limit": ("--limit", "-l"),
     "offset": ("--offset", "-o"),
     "yes_to_all": ("--yes", "-y"),
@@ -23,6 +25,8 @@ FLAGS: Dict[str, tuple] = {
     "format": ("--format", "-f"),
     "output_file": ("--output", "-o"),
     "status": ("--status",),
+    "telegram_id": ("--telegram-id", "-tg"),
+    "discord_webhook": ("--discord-webhook", "-dc"),
 }
 
 

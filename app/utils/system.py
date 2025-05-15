@@ -1,10 +1,12 @@
-import requests
+import ipaddress
 import math
 import secrets
 import socket
+import time
 from dataclasses import dataclass
 
 import psutil
+import requests
 
 from app import scheduler
 
@@ -38,8 +40,10 @@ class RealtimeBandwidth:
         self.bytes_recv = io.bytes_recv
         self.bytes_sent = io.bytes_sent
         self.packets_recv = io.packets_recv
-        self.packet_sent = io.packets_sent
+        self.packets_sent = io.packets_sent
+        self.last_perf_counter = time.perf_counter()
 
+    # data in the form of value per seconds
     incoming_bytes: int
     outgoing_bytes: int
     incoming_packets: int
@@ -48,11 +52,14 @@ class RealtimeBandwidth:
     bytes_recv: int = None
     bytes_sent: int = None
     packets_recv: int = None
-    packet_sent: int = None
+    packets_sent: int = None
+    last_perf_counter: float = None
 
 
 @dataclass
 class RealtimeBandwidthStat:
+    """Real-Time bandwith in value/s unit"""
+
     incoming_bytes: int
     outgoing_bytes: int
     incoming_packets: int
@@ -63,19 +70,27 @@ rt_bw = RealtimeBandwidth(
     incoming_bytes=0, outgoing_bytes=0, incoming_packets=0, outgoing_packets=0)
 
 
-@scheduler.scheduled_job('interval', seconds=1)
+# sample time is 2 seconds, values lower than this may not produce good results
+@scheduler.scheduled_job("interval", seconds=2, coalesce=True, max_instances=1)
 def record_realtime_bandwidth() -> None:
+    global rt_bw
+    last_perf_counter = rt_bw.last_perf_counter
     io = psutil.net_io_counters()
-    rt_bw.incoming_bytes, rt_bw.bytes_recv = io.bytes_recv - rt_bw.bytes_recv, io.bytes_recv
-    rt_bw.outgoing_bytes, rt_bw.bytes_sent = io.bytes_sent - rt_bw.bytes_sent, io.bytes_sent
-    rt_bw.incoming_packets, rt_bw.packets_recv = io.packets_recv - rt_bw.packets_recv, io.packets_recv
-    rt_bw.outgoing_packets, rt_bw.packet_sent = io.packets_sent - rt_bw.packet_sent, io.packets_sent
+    rt_bw.last_perf_counter = time.perf_counter()
+    sample_time = rt_bw.last_perf_counter - last_perf_counter
+    rt_bw.incoming_bytes, rt_bw.bytes_recv = round((io.bytes_recv - rt_bw.bytes_recv) / sample_time), io.bytes_recv
+    rt_bw.outgoing_bytes, rt_bw.bytes_sent = round((io.bytes_sent - rt_bw.bytes_sent) / sample_time), io.bytes_sent
+    rt_bw.incoming_packets, rt_bw.packets_recv = round((io.packets_recv - rt_bw.packets_recv) / sample_time), io.packets_recv
+    rt_bw.outgoing_packets, rt_bw.packets_sent = round((io.packets_sent - rt_bw.packets_sent) / sample_time), io.packets_sent
 
 
 def realtime_bandwidth() -> RealtimeBandwidthStat:
     return RealtimeBandwidthStat(
-        incoming_bytes=rt_bw.incoming_bytes, outgoing_bytes=rt_bw.outgoing_bytes,
-        incoming_packets=rt_bw.incoming_packets, outgoing_packets=rt_bw.outgoing_packets)
+        incoming_bytes=rt_bw.incoming_bytes,
+        outgoing_bytes=rt_bw.outgoing_bytes,
+        incoming_packets=rt_bw.incoming_packets,
+        outgoing_packets=rt_bw.outgoing_packets,
+    )
 
 
 def random_password() -> str:
@@ -95,18 +110,25 @@ def check_port(port: int) -> bool:
 
 def get_public_ip():
     try:
-        return requests.get('https://api.ipify.org?format=json&ipv=4', timeout=5).json()['ip']
-    except (requests.exceptions.RequestException,
-            requests.exceptions.RequestException,
-            KeyError) as e:
+        resp = requests.get('http://api4.ipify.org/', timeout=5).text.strip()
+        if ipaddress.IPv4Address(resp).is_global:
+            return resp
+    except:
+        pass
+
+    try:
+        resp = requests.get('http://ipv4.icanhazip.com/', timeout=5).text.strip()
+        if ipaddress.IPv4Address(resp).is_global:
+            return resp
+    except:
         pass
 
     try:
         requests.packages.urllib3.util.connection.HAS_IPV6 = False
-        return requests.get('https://ifconfig.io/ip', timeout=5).text.strip()
-    except (requests.exceptions.RequestException,
-            requests.exceptions.RequestException,
-            KeyError) as e:
+        resp = requests.get('https://ifconfig.io/ip', timeout=5).text.strip()
+        if ipaddress.IPv4Address(resp).is_global:
+            return resp
+    except requests.exceptions.RequestException:
         pass
     finally:
         requests.packages.urllib3.util.connection.HAS_IPV6 = True
@@ -114,7 +136,9 @@ def get_public_ip():
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.connect(('8.8.8.8', 80))
-        return sock.getsockname()[0]
+        resp = sock.getsockname()[0]
+        if ipaddress.IPv4Address(resp).is_global:
+            return resp
     except (socket.error, IndexError):
         pass
     finally:
@@ -123,8 +147,26 @@ def get_public_ip():
     return '127.0.0.1'
 
 
+def get_public_ipv6():
+    try:
+        resp = requests.get('http://api6.ipify.org/', timeout=5).text.strip()
+        if ipaddress.IPv6Address(resp).is_global:
+            return '[%s]' % resp
+    except:
+        pass
+
+    try:
+        resp = requests.get('http://ipv6.icanhazip.com/', timeout=5).text.strip()
+        if ipaddress.IPv6Address(resp).is_global:
+            return '[%s]' % resp
+    except:
+        pass
+
+    return '[::1]'
+
+
 def readable_size(size_bytes):
-    if size_bytes == 0:
+    if size_bytes <= 0:
         return "0 B"
     size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
     i = int(math.floor(math.log(size_bytes, 1024)))

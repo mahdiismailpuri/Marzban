@@ -1,4 +1,4 @@
-from abc import ABC, abstractproperty
+from abc import ABC, abstractmethod 
 from enum import Enum
 from uuid import UUID
 
@@ -19,8 +19,9 @@ class Account(BaseModel, ABC):
     email: str
     level: int = 0
 
-    @abstractproperty
-    def message(self) -> TypedMessage:
+    @property
+    @abstractmethod
+    def message(self):
         pass
 
     def __repr__(self) -> str:
@@ -32,7 +33,7 @@ class VMessAccount(Account):
 
     @property
     def message(self):
-        return Message(VMessAccountPb2(id=str(self.id), alter_id=0))
+        return Message(VMessAccountPb2(id=str(self.id)))
 
 
 class XTLSFlows(Enum):
@@ -55,7 +56,7 @@ class TrojanAccount(Account):
 
     @property
     def message(self):
-        return Message(TrojanAccountPb2(password=self.password, flow=self.flow.value))
+        return Message(TrojanAccountPb2(password=self.password))
 
 
 class ShadowsocksMethods(Enum):
